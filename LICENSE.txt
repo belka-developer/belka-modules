@@ -1,0 +1,23 @@
+DeadBundle Plugin License
+
+Copyright (c) 2026 belka-developer
+
+Permission is granted to download and use this plugin on Minecraft servers,
+including modifying the configuration files for personal server needs.
+
+It is FORBIDDEN to:
+- modify the plugin JAR or its code and distribute the modified version
+	on any platforms or to third parties without explicit credit to the
+	original author (belka-developer);
+- redistribute this plugin (original or modified) under a different name
+	without mentioning the original author (belka-developer);
+- claim authorship of this plugin or its modified versions.
+
+By using this plugin you agree to these terms.
+
+Russian (RU) summary:
+- Разрешено использовать плагин на своих серверах и настраивать конфиги.
+- Запрещено выкладывать изменённый плагин под другим именем или без явного
+	указания автора (belka-developer).
+- Запрещено присваивать себе авторство оригинального или модифицированного
+	плагина.
