@@ -129,7 +129,7 @@ class _UserDeserializeHook(MethodHook):
 def on_plugin_load(plugin):
     run_on_queue(_refresh_ids, PLUGINS_QUEUE, 0)
 
-    from java.lang import Class, Integer, Boolean
+    from java.lang import Class
 
     # --- диагностика перед установкой боевого хука ---
     try:
@@ -144,18 +144,25 @@ def on_plugin_load(plugin):
         UserClass = Class.forName("org.telegram.tgnet.TLRPC$User")
         log(f"[CommunityMedal] DEBUG UserClass={UserClass} type={type(UserClass)}")
 
-        AbstractSerializedDataClass = Class.forName("org.telegram.tgnet.AbstractSerializedData")
-        log(f"[CommunityMedal] DEBUG AbstractSerializedDataClass type={type(AbstractSerializedDataClass)}")
+        # Не угадываем сигнатуру — ищем метод по имени среди ВСЕХ объявленных
+        # методов класса и берём его реальные типы параметров.
+        target_method = None
+        for m in UserClass.getDeclaredMethods():
+            if m.getName() == "TLdeserialize":
+                target_method = m
+                param_types = [str(t) for t in m.getParameterTypes()]
+                log(f"[CommunityMedal] DEBUG найден TLdeserialize, параметры: {param_types}")
+                break
 
-        deserialize_method = UserClass.getDeclaredMethod(
-            "TLdeserialize", AbstractSerializedDataClass, Integer.TYPE, Boolean.TYPE,
-        )
-        deserialize_method.setAccessible(True)
-
-        handle = plugin.hook_method(deserialize_method, _UserDeserializeHook())
-        if handle:
-            log("[CommunityMedal] хук на TLdeserialize установлен")
+        if target_method is None:
+            log("[CommunityMedal] TLdeserialize не найден среди объявленных методов TLRPC$User")
         else:
-            log("[CommunityMedal] не удалось установить хук (handle пустой)")
+            target_method.setAccessible(True)
+
+            handle = plugin.hook_method(target_method, _UserDeserializeHook())
+            if handle:
+                log("[CommunityMedal] хук на TLdeserialize установлен")
+            else:
+                log("[CommunityMedal] не удалось установить хук (handle пустой)")
     except Exception as e:
         log(f"[CommunityMedal] ошибка установки хука: {e}")
