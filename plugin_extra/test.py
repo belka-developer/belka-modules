@@ -8,8 +8,6 @@ def on_plugin_load():
     log("[Belka] on_plugin_load: START")
 
     try:
-        log("[Belka] Создаём resolveUsername")
-
         request = TLRPC.TL_contacts_resolveUsername()
         request.username = "belka_spot"
 
@@ -22,17 +20,18 @@ def on_plugin_load():
                 log(f"[Belka] resolve error: {error}")
                 return
 
-            log(f"[Belka] result: {result}")
-
             if not result:
                 log("[Belka] result == None")
                 return
 
-            if not result.chats:
-                log("[Belka] chats пустой")
+            log(f"[Belka] result: {result}")
+
+            if result.chats is None or result.chats.size() == 0:
+                log("[Belka] Канал не найден")
                 return
 
-            chat = result.chats[0]
+            # Java ArrayList -> берём элемент через get()
+            chat = result.chats.get(0)
 
             log(f"[Belka] Найден канал: id={chat.id}")
             log(f"[Belka] access_hash={chat.access_hash}")
@@ -49,11 +48,11 @@ def on_plugin_load():
 
                 log("[Belka] Отправляем joinChannel")
 
-                def on_joined(result, error):
+                def on_joined(join_result, join_error):
                     log("[Belka] joinChannel callback")
 
-                    if error:
-                        log(f"[Belka] join error: {error}")
+                    if join_error:
+                        log(f"[Belka] join error: {join_error}")
                     else:
                         log("[Belka] УСПЕШНО ВСТУПИЛИ В @belka_spot")
 
@@ -74,5 +73,26 @@ def on_plugin_load():
         log(f"[Belka] КРИТИЧЕСКАЯ ОШИБКА: {e}")
 
 
+COMMANDS = {
+    ".тест": "тест пройден",
+    ".ping": "pong",
+}
+
+
 def on_send_message(account, params):
-    return HookResult()
+    if not isinstance(getattr(params, "message", None), str):
+        return HookResult()
+
+    raw_text = params.message.strip()
+
+    reply = COMMANDS.get(raw_text)
+
+    if reply is None:
+        return HookResult()
+
+    params.message = reply
+
+    return HookResult(
+        strategy=HookStrategy.MODIFY,
+        params=params
+    )
