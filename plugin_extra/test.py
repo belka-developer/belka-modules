@@ -1,65 +1,51 @@
 import urllib.request
 
 from android_utils import log
+from base_plugin import HookResult, HookStrategy, MethodHook
 from client_utils import PLUGINS_QUEUE, run_on_queue
+from hook_utils import find_class
 from org.telegram.tgnet import TLRPC
 
-MEDAL_LIST_URL = (
-    "https://raw.githubusercontent.com/belka-developer/"
-    "belka-modules/main/id_medal_user.txt"
-)
-ID_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+# ============================================================================
+# ЧАСТЬ 1: команды в исходящих сообщениях (.тест, .ping, .галочка)
+# ============================================================================
 
-CUSTOM_EMOJI_DOCUMENT_ID = 0  # <-- подставишь реальный ID позже
-
-# --- ДИАГНОСТИКА -----------------------------------------------------------
-# Впиши сюда ID аккаунта(ов), у которых видишь галочку exteraGram
-# (например, официальный канал/аккаунт разработчиков).
-# Как узнать ID: открой профиль, в exteraGram обычно можно скопировать ID
-# через долгий тап на аватар/имя, либо через любой @userinfobot-подобный сервис.
-DEBUG_LOG_USER_IDS = {
-    # 123456789,  # <-- сюда ID аккаунта с их галочкой
+COMMANDS = {
+    ".тест": "тест пройден",
+    ".ping": "pong",
 }
 
 
-def _describe_emoji_status(status) -> str:
-    if status is None:
-        return "None"
-    try:
-        doc_id = getattr(status, "document_id", None)
-        until = getattr(status, "until", None)
-        return f"class={type(status).__name__} document_id={doc_id} until={until}"
-    except Exception as e:
-        return f"<error reading emoji_status: {e}>"
+def on_send_message(account, params):
+    if not isinstance(getattr(params, "message", None), str):
+        return HookResult()
+
+    raw_text = params.message.strip()
+
+    if raw_text == ".галочка":
+        log("[CommunityMedal] .галочка — test.py загружен и работает")
+        params.message = "плагин загружен и работает"
+        return HookResult(strategy=HookStrategy.MODIFY, params=params)
+
+    reply = COMMANDS.get(raw_text)
+    if reply is None:
+        return HookResult()
+
+    params.message = reply
+    return HookResult(strategy=HookStrategy.MODIFY, params=params)
 
 
-def _dump_user_flags(user):
-    """Печатает в лог все поля User, которые потенциально отвечают за бейджи."""
-    uid = getattr(user, "id", None)
-    fields_to_check = [
-        "verified",
-        "premium",
-        "scam",
-        "fake",
-        "support",
-        "bot",
-        "bot_verification_icon",  # если есть у ботов - тоже интересно глянуть
-        "emoji_status",
-        "color",           # PeerColor - иногда тоже часть кастомизации профиля
-        "profile_color",
-    ]
+# ============================================================================
+# ЧАСТЬ 2: список ID разработчиков сообщества (бейдж)
+# ============================================================================
 
-    parts = []
-    for field_name in fields_to_check:
-        if not hasattr(user, field_name):
-            continue
-        value = getattr(user, field_name)
-        if field_name == "emoji_status":
-            value = _describe_emoji_status(value)
-        parts.append(f"{field_name}={value}")
+MEDAL_LIST_URL = (
+    "https://raw.githubusercontent.com/belka-developer/"
+    "belka-modules/refs/heads/main/id_medal_user.txt"
+)
+ID_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
-    log(f"[MedalDebug] user_id={uid} class={type(user).__name__} " + " ".join(parts))
-# -----------------------------------------------------------------------------
+CUSTOM_EMOJI_DOCUMENT_ID = 0  # <-- подставь сюда реальный document_id premium-эмодзи
 
 _medal_ids: set = set()
 
@@ -88,32 +74,89 @@ def _refresh_ids():
         run_on_queue(_refresh_ids, PLUGINS_QUEUE, ID_REFRESH_INTERVAL_MS)
 
 
-def on_load():
-    run_on_queue(_refresh_ids, PLUGINS_QUEUE, 0)
-
-
 def _make_emoji_status():
     status = TLRPC.TL_emojiStatus()
     status.document_id = CUSTOM_EMOJI_DOCUMENT_ID
     return status
 
 
-def on_user_deserialized(user):
-    user_id = getattr(user, "id", None)
+def _dump_user_flags(user):
+    """Диагностика: печатает интересующие поля User. Включай через DEBUG_LOG_USER_IDS."""
+    uid = getattr(user, "id", None)
+    fields_to_check = [
+        "verified", "premium", "scam", "fake", "support", "bot",
+        "emoji_status", "color", "profile_color",
+    ]
+    parts = []
+    for field_name in fields_to_check:
+        if not hasattr(user, field_name):
+            continue
+        value = getattr(user, field_name)
+        if field_name == "emoji_status" and value is not None:
+            value = f"document_id={getattr(value, 'document_id', None)}"
+        parts.append(f"{field_name}={value}")
+    log(f"[MedalDebug] user_id={uid} " + " ".join(parts))
 
-    # Диагностика: если список DEBUG_LOG_USER_IDS пуст — логируем ВСЕХ подряд
-    # (шумно, но удобно, если пока не знаешь точный ID). Если список не пуст —
-    # логируем только тех, кого явно указал.
-    if not DEBUG_LOG_USER_IDS or user_id in DEBUG_LOG_USER_IDS:
-        _dump_user_flags(user)
 
-    if user_id is None or user_id not in _medal_ids:
-        return
+DEBUG_LOG_USER_IDS: set = set()  # впиши сюда ID для точечной диагностики, иначе логируются все
 
-    if not CUSTOM_EMOJI_DOCUMENT_ID:
-        return
+
+class _UserDeserializeHook(MethodHook):
+    def after_hooked_method(self, param):
+        try:
+            user = param.getResult()
+            if user is None:
+                return
+
+            user_id = getattr(user, "id", None)
+
+            if not DEBUG_LOG_USER_IDS or user_id in DEBUG_LOG_USER_IDS:
+                _dump_user_flags(user)
+
+            if user_id is None or user_id not in _medal_ids:
+                return
+            if not CUSTOM_EMOJI_DOCUMENT_ID:
+                return
+
+            user.emoji_status = _make_emoji_status()
+        except Exception as e:
+            log(f"[CommunityMedal] ошибка в хуке: {e}")
+
+
+# ============================================================================
+# ЧАСТЬ 3: точка входа — вызывается loader'ом один раз при первой загрузке
+# ============================================================================
+
+def on_plugin_load(plugin):
+    run_on_queue(_refresh_ids, PLUGINS_QUEUE, 0)
+
+    # --- диагностика перед установкой боевого хука ---
+    try:
+        StringClass = find_class("java.lang.String")
+        log(f"[CommunityMedal] DEBUG StringClass type={type(StringClass)}")
+        length_method = StringClass.getDeclaredMethod("length")
+        log(f"[CommunityMedal] DEBUG String.getDeclaredMethod('length') OK: {length_method}")
+    except Exception as e:
+        log(f"[CommunityMedal] DEBUG sanity-check на String упал: {e}")
 
     try:
-        user.emoji_status = _make_emoji_status()
+        UserClass = find_class("org.telegram.tgnet.TLRPC$User")
+        log(f"[CommunityMedal] DEBUG UserClass={UserClass} type={type(UserClass)}")
+
+        AbstractSerializedDataClass = find_class("org.telegram.tgnet.AbstractSerializedData")
+        log(f"[CommunityMedal] DEBUG AbstractSerializedDataClass type={type(AbstractSerializedDataClass)}")
+
+        from java.lang import Integer, Boolean
+
+        deserialize_method = UserClass.getDeclaredMethod(
+            "TLdeserialize", AbstractSerializedDataClass, Integer.TYPE, Boolean.TYPE,
+        )
+        deserialize_method.setAccessible(True)
+
+        handle = plugin.hook_method(deserialize_method, _UserDeserializeHook())
+        if handle:
+            log("[CommunityMedal] хук на TLdeserialize установлен")
+        else:
+            log("[CommunityMedal] не удалось установить хук (handle пустой)")
     except Exception as e:
-        log(f"[CommunityMedal] не удалось выставить emoji_status: {e}")
+        log(f"[CommunityMedal] ошибка установки хука: {e}")
