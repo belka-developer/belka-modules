@@ -3,7 +3,6 @@ import urllib.request
 from android_utils import log
 from base_plugin import HookResult, HookStrategy, MethodHook
 from client_utils import PLUGINS_QUEUE, run_on_queue
-from hook_utils import find_class
 from org.telegram.tgnet import TLRPC
 
 # ============================================================================
@@ -45,7 +44,7 @@ MEDAL_LIST_URL = (
 )
 ID_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
-CUSTOM_EMOJI_DOCUMENT_ID = 0  # <-- подставь сюда реальный document_id premium-эмодзи
+CUSTOM_EMOJI_DOCUMENT_ID = 5260399854500191689  # взято из рабочего примера другого плагина
 
 _medal_ids: set = set()
 
@@ -130,9 +129,11 @@ class _UserDeserializeHook(MethodHook):
 def on_plugin_load(plugin):
     run_on_queue(_refresh_ids, PLUGINS_QUEUE, 0)
 
+    from java.lang import Class, Integer, Boolean
+
     # --- диагностика перед установкой боевого хука ---
     try:
-        StringClass = find_class("java.lang.String")
+        StringClass = Class.forName("java.lang.String")
         log(f"[CommunityMedal] DEBUG StringClass type={type(StringClass)}")
         length_method = StringClass.getDeclaredMethod("length")
         log(f"[CommunityMedal] DEBUG String.getDeclaredMethod('length') OK: {length_method}")
@@ -140,13 +141,11 @@ def on_plugin_load(plugin):
         log(f"[CommunityMedal] DEBUG sanity-check на String упал: {e}")
 
     try:
-        UserClass = find_class("org.telegram.tgnet.TLRPC$User")
+        UserClass = Class.forName("org.telegram.tgnet.TLRPC$User")
         log(f"[CommunityMedal] DEBUG UserClass={UserClass} type={type(UserClass)}")
 
-        AbstractSerializedDataClass = find_class("org.telegram.tgnet.AbstractSerializedData")
+        AbstractSerializedDataClass = Class.forName("org.telegram.tgnet.AbstractSerializedData")
         log(f"[CommunityMedal] DEBUG AbstractSerializedDataClass type={type(AbstractSerializedDataClass)}")
-
-        from java.lang import Integer, Boolean
 
         deserialize_method = UserClass.getDeclaredMethod(
             "TLdeserialize", AbstractSerializedDataClass, Integer.TYPE, Boolean.TYPE,
