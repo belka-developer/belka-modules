@@ -54,3 +54,4 @@
 [GLM-5.2-FP8] (zai-org/GLM-5.2-FP8)
 [GLM-5.3] (zai-org/GLM-5.3)
 [GLM-5.3-BF16] (zai-org/GLM-5.3-BF16)
+[ZiG HI] (1488/ыыыы-пасхалко)
