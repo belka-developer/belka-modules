@@ -101,10 +101,15 @@ DEBUG_LOG_USER_IDS: set = set()  # впиши сюда ID для точечно�
 
 
 class _UserDeserializeHook(MethodHook):
+    def before_hooked_method(self, param):
+        log("[CommunityMedal] before_hooked_method сработал (TLdeserialize вызван)")
+
     def after_hooked_method(self, param):
         try:
+            log("[CommunityMedal] after_hooked_method сработал")
             user = param.getResult()
             if user is None:
+                log("[CommunityMedal] getResult() вернул None")
                 return
 
             user_id = getattr(user, "id", None)
