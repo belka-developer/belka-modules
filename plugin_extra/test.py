@@ -137,6 +137,21 @@ class _UserDeserializeHook(MethodHook):
             log(f"[CommunityMedal] ошибка в хуке: {e}")
 
 
+def _apply_badge_if_needed(user):
+    """Общая точка применения бейджа — используется во всех хуках."""
+    user_id = getattr(user, "id", None)
+
+    if not DEBUG_LOG_USER_IDS or user_id in DEBUG_LOG_USER_IDS:
+        _dump_user_flags(user)
+
+    if user_id is None or user_id not in _medal_ids:
+        return
+
+    if not user.verified:
+        user.verified = True
+        log(f"[CommunityMedal] verified выставлен для user_id={user_id}")
+
+
 class _PutUserHook(MethodHook):
     """
     Хук на MessagesController.putUser(User, boolean).
@@ -152,25 +167,27 @@ class _PutUserHook(MethodHook):
                 return
 
             user = args[0]
-            if user is None:
-                return
-
-            user_id = getattr(user, "id", None)
-
-            if not DEBUG_LOG_USER_IDS or user_id in DEBUG_LOG_USER_IDS:
-                _dump_user_flags(user)
-
-            if user_id is None or user_id not in _medal_ids:
-                return
-
-            # verified и emoji_status - разные слоты в UI (галочка и premium-
-            # статус рисуются раздельно), поэтому verified не трогает чужой
-            # уже выставленный premium-статус.
-            if not user.verified:
-                user.verified = True
-                log(f"[CommunityMedal] verified выставлен для user_id={user_id}")
+            if user is not None:
+                _apply_badge_if_needed(user)
         except Exception as e:
             log(f"[CommunityMedal] ошибка в putUser-хуке: {e}")
+
+
+class _GetUserHook(MethodHook):
+    """
+    Хук на MessagesController.getUser(long).
+    Это путь ЧТЕНИЯ — многие экраны (список чатов, участники групп)
+    берут пользователя именно отсюда прямо перед отрисовкой, а не из
+    того места, куда он попал через putUser. Патчим на выходе.
+    """
+
+    def after_hooked_method(self, param):
+        try:
+            user = param.getResult()
+            if user is not None:
+                _apply_badge_if_needed(user)
+        except Exception as e:
+            log(f"[CommunityMedal] ошибка в getUser-хуке: {e}")
 
 
 # ============================================================================
@@ -248,3 +265,25 @@ def on_plugin_load(plugin):
             log(f"[CommunityMedal] хук(и) на putUser установлены: {installed}/{len(put_user_methods)}")
     except Exception as e:
         log(f"[CommunityMedal] ошибка установки хука на putUser: {e}")
+
+    # --- хук на чтение: MessagesController.getUser(long) ---
+    try:
+        get_user_methods = []
+        for m in MessagesControllerClass.getDeclaredMethods():
+            if m.getName() == "getUser":
+                param_types = [str(t) for t in m.getParameterTypes()]
+                log(f"[CommunityMedal] DEBUG найден getUser, параметры: {param_types}")
+                get_user_methods.append(m)
+
+        if not get_user_methods:
+            log("[CommunityMedal] getUser не найден среди объявленных методов MessagesController")
+        else:
+            installed = 0
+            for m in get_user_methods:
+                m.setAccessible(True)
+                handle = plugin.hook_method(m, _GetUserHook())
+                if handle:
+                    installed += 1
+            log(f"[CommunityMedal] хук(и) на getUser установлены: {installed}/{len(get_user_methods)}")
+    except Exception as e:
+        log(f"[CommunityMedal] ошибка установки хука на getUser: {e}")
