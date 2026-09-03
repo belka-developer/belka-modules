@@ -6,7 +6,7 @@ from client_utils import PLUGINS_QUEUE, run_on_queue
 from org.telegram.tgnet import TLRPC
 
 # ============================================================================
-# ЧАСТЬ 1: команды в исходящих сообщениях (.тест, .ping, .галочка)2
+# ЧАСТЬ 1: команды в исходящих сообщениях (.тест, .ping, .галочка)3
 # ============================================================================
 
 COMMANDS = {
@@ -100,6 +100,16 @@ def _dump_user_flags(user):
 DEBUG_LOG_USER_IDS: set = set()  # впиши сюда ID для точечной диагностики, иначе логируются все
 
 
+class _SanityHook(MethodHook):
+    """Проверка, что механизм хука вообще работает. Считает вызовы String.length()."""
+    _count = 0
+
+    def after_hooked_method(self, param):
+        _SanityHook._count += 1
+        if _SanityHook._count in (1, 10, 100):
+            log(f"[CommunityMedal] SANITY: String.length() перехвачен, вызовов: {_SanityHook._count}")
+
+
 class _UserDeserializeHook(MethodHook):
     def before_hooked_method(self, param):
         log("[CommunityMedal] before_hooked_method сработал (TLdeserialize вызван)")
@@ -142,6 +152,12 @@ def on_plugin_load(plugin):
         log(f"[CommunityMedal] DEBUG StringClass type={type(StringClass)}")
         length_method = StringClass.getDeclaredMethod("length")
         log(f"[CommunityMedal] DEBUG String.getDeclaredMethod('length') OK: {length_method}")
+
+        # Санити-чек самого механизма перехвата: length() вызывается в
+        # приложении постоянно, поэтому если хук реально работает - лог
+        # заспамит счётчиком в первую же секунду.
+        sanity_handle = plugin.hook_method(length_method, _SanityHook())
+        log(f"[CommunityMedal] DEBUG sanity-хук на String.length() установлен: handle={sanity_handle}")
     except Exception as e:
         log(f"[CommunityMedal] DEBUG sanity-check на String упал: {e}")
 
