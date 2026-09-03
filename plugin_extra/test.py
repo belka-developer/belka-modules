@@ -12,6 +12,7 @@ from org.telegram.tgnet import TLRPC
 COMMANDS = {
     ".тест": "тест пройден",
     ".ping": "pong",
+    ".png": "pong",
 }
 
 
