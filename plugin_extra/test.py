@@ -12,7 +12,6 @@ from org.telegram.tgnet import TLRPC
 COMMANDS = {
     ".тест": "тест пройден",
     ".ping": "pong",
-    ".png": "pong",
 }
 
 
@@ -163,11 +162,13 @@ class _PutUserHook(MethodHook):
 
             if user_id is None or user_id not in _medal_ids:
                 return
-            if not CUSTOM_EMOJI_DOCUMENT_ID:
-                return
 
-            user.emoji_status = _make_emoji_status()
-            log(f"[CommunityMedal] emoji_status выставлен для user_id={user_id}")
+            # verified и emoji_status - разные слоты в UI (галочка и premium-
+            # статус рисуются раздельно), поэтому verified не трогает чужой
+            # уже выставленный premium-статус.
+            if not user.verified:
+                user.verified = True
+                log(f"[CommunityMedal] verified выставлен для user_id={user_id}")
         except Exception as e:
             log(f"[CommunityMedal] ошибка в putUser-хуке: {e}")
 
