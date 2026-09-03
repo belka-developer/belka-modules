@@ -6,7 +6,7 @@ from client_utils import PLUGINS_QUEUE, run_on_queue
 from org.telegram.tgnet import TLRPC
 
 # ============================================================================
-# ЧАСТЬ 1: команды в исходящих сообщениях (.тест, .ping, .галочка)3
+# ЧАСТЬ 1: команды в исходящих сообщениях (.тест, .ping, .галочка)
 # ============================================================================
 
 COMMANDS = {
@@ -137,6 +137,40 @@ class _UserDeserializeHook(MethodHook):
             log(f"[CommunityMedal] ошибка в хуке: {e}")
 
 
+class _PutUserHook(MethodHook):
+    """
+    Хук на MessagesController.putUser(User, boolean).
+    Модифицируем объект пользователя ДО того, как он попадёт в кэш
+    контроллера — правим прямо в args[0], т.к. putUser ничего не
+    возвращает (void), getResult() тут бесполезен.
+    """
+
+    def before_hooked_method(self, param):
+        try:
+            args = param.args
+            if len(args) == 0:
+                return
+
+            user = args[0]
+            if user is None:
+                return
+
+            user_id = getattr(user, "id", None)
+
+            if not DEBUG_LOG_USER_IDS or user_id in DEBUG_LOG_USER_IDS:
+                _dump_user_flags(user)
+
+            if user_id is None or user_id not in _medal_ids:
+                return
+            if not CUSTOM_EMOJI_DOCUMENT_ID:
+                return
+
+            user.emoji_status = _make_emoji_status()
+            log(f"[CommunityMedal] emoji_status выставлен для user_id={user_id}")
+        except Exception as e:
+            log(f"[CommunityMedal] ошибка в putUser-хуке: {e}")
+
+
 # ============================================================================
 # ЧАСТЬ 3: точка входа — вызывается loader'ом один раз при первой загрузке
 # ============================================================================
@@ -186,4 +220,29 @@ def on_plugin_load(plugin):
             else:
                 log("[CommunityMedal] не удалось установить хук (handle пустой)")
     except Exception as e:
-        log(f"[CommunityMedal] ошибка установки хука: {e}")
+        log(f"[CommunityMedal] ошибка установки хука на TLdeserialize: {e}")
+
+    # --- более надёжная точка хука: MessagesController.putUser ---
+    try:
+        MessagesControllerClass = Class.forName("org.telegram.messenger.MessagesController")
+        log(f"[CommunityMedal] DEBUG MessagesControllerClass type={type(MessagesControllerClass)}")
+
+        put_user_methods = []
+        for m in MessagesControllerClass.getDeclaredMethods():
+            if m.getName() == "putUser":
+                param_types = [str(t) for t in m.getParameterTypes()]
+                log(f"[CommunityMedal] DEBUG найден putUser, параметры: {param_types}")
+                put_user_methods.append(m)
+
+        if not put_user_methods:
+            log("[CommunityMedal] putUser не найден среди объявленных методов MessagesController")
+        else:
+            installed = 0
+            for m in put_user_methods:
+                m.setAccessible(True)
+                handle = plugin.hook_method(m, _PutUserHook())
+                if handle:
+                    installed += 1
+            log(f"[CommunityMedal] хук(и) на putUser установлены: {installed}/{len(put_user_methods)}")
+    except Exception as e:
+        log(f"[CommunityMedal] ошибка установки хука на putUser: {e}")
