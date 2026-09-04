@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import html
+import io
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -190,13 +191,27 @@ async def send_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         file_url = github_file_url(item)
         if not file_url.startswith(("http://", "https://")):
             raise ValueError("У элемента каталога отсутствует корректная ссылка на файл")
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(file_url)
+            response.raise_for_status()
+        filename = os.path.basename(urlparse(file_url).path) or f"{item['name']}.plugin"
         await query.message.reply_document(
-            document=file_url,
+            document=InputFile(io.BytesIO(response.content), filename=filename),
             caption=html.escape(str(item.get("name", "Файл"))),
         )
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        logger.warning("Некорректный элемент каталога: %s", error)
-        await query.message.reply_text("Этот результат больше недоступен. Выполните поиск заново.")
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
+        logger.warning("Не удалось отправить элемент каталога: %s", error)
+        await query.message.reply_text(
+            "Не удалось скачать файл. Проверьте ссылку в каталоге или повторите поиск позже."
+        )
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Ошибка обработки обновления", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Произошла ошибка при обработке запроса. Попробуйте еще раз."
+        )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -221,6 +236,7 @@ def main() -> None:
     )
     application.add_handler(conversation)
     application.add_handler(CallbackQueryHandler(send_item, pattern=r"^get:"))
+    application.add_error_handler(error_handler)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
