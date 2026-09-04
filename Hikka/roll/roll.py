@@ -25,7 +25,7 @@ __version__ = (0, 0, 1)
 #                               ── 𝙱ᥱ᧘κᥲ | 𝙼𝙾𝙳𝚂 ──
 #                          meta developer: @psycho_belka
 
-from .. import loader, utils
+from ... import loader, utils
 import random
 
 @loader.tds

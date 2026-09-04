@@ -8,6 +8,15 @@
       "description": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/plugin_extra/Ai-model-belka/description.txt",
       "file": "ai-model-belka.plugin",
       "keywords": ["ai", "model", "искусственный интеллект"]
+    },
+    {
+      "type": "hikka",
+      "name": "Roll",
+      "ls": "https://github.com/belka-developer/belka-modules/tree/main/plugin_extra/Roll",
+      "version": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/plugin_extra/Roll/version.txt",
+      "description": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/plugin_extra/Roll/description.txt",
+      "file": "Roll.py",
+      "keywords": ["roll", "dice", "game"]
     }
   ]
 }

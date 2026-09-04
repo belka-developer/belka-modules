@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import difflib
-import html
 import io
 import json
 import logging
@@ -11,7 +10,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -30,6 +35,7 @@ CATALOG_URL = os.getenv(
     "refs/heads/main/bot_market/asset.json",
 )
 MAX_RESULTS = 10
+SEARCH_BUTTON = "🔎 Поиск"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -44,9 +50,38 @@ def platform_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("Hikka", callback_data="type:hikka"),
                 InlineKeyboardButton("ExteriaGram", callback_data="type:exteriagram"),
-            ]
+            ],
+            [InlineKeyboardButton("« В главное меню", callback_data="menu")],
         ]
     )
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[SEARCH_BUTTON, "📦 Каталог"], ["ℹ️ Помощь"]],
+        resize_keyboard=True,
+    )
+
+
+def results_keyboard(
+    results: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                str(item["name"])[:64],
+                callback_data=f"get:{index}",
+            )
+        ]
+        for index, item in enumerate(results)
+    ]
+    buttons.append(
+        [
+            InlineKeyboardButton("🔎 Новый поиск", callback_data="search"),
+            InlineKeyboardButton("« В меню", callback_data="menu"),
+        ]
+    )
+    return InlineKeyboardMarkup(buttons)
 
 
 def normalize(value: str) -> str:
@@ -95,6 +130,15 @@ async def load_catalog() -> list[dict[str, Any]]:
         return parse_catalog(response.json())
 
 
+async def load_metadata(client: httpx.AsyncClient, value: Any) -> str:
+    metadata = str(value or "").strip()
+    if not metadata.startswith(("http://", "https://")):
+        return metadata
+    response = await client.get(metadata)
+    response.raise_for_status()
+    return response.text.strip()
+
+
 def search_catalog(
     entries: list[dict[str, Any]], platform: str, query: str
 ) -> list[dict[str, Any]]:
@@ -125,10 +169,58 @@ def search_catalog(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text(
-        "Выберите платформу, для которой ищете модуль или плагин:",
+        "Добро пожаловать в маркет модулей и плагинов.\n"
+        "Нажмите «🔎 Поиск», чтобы найти нужный файл.",
+        reply_markup=main_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def begin_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Для какой платформы выполняем поиск?",
         reply_markup=platform_keyboard(),
     )
     return TYPE
+
+
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    await update.message.reply_text(
+        "Как пользоваться:\n"
+        "1. Нажмите «🔎 Поиск».\n"
+        "2. Выберите Hikka или ExteriaGram.\n"
+        "3. Напишите название или опишите нужную функцию.\n"
+        "4. Нажмите на результат — бот отправит файл с версией и описанием.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    try:
+        entries = await load_catalog()
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError) as error:
+        logger.warning("Не удалось загрузить каталог: %s", error)
+        await update.message.reply_text(
+            "Каталог временно недоступен. Попробуйте позже.",
+            reply_markup=main_keyboard(),
+        )
+        return
+    counts = {
+        "hikka": sum(normalize(str(item.get("type"))) == "hikka" for item in entries),
+        "exteriagram": sum(
+            normalize(str(item.get("type"))) in {"exteriagram", "plugin"}
+            for item in entries
+        ),
+    }
+    await update.message.reply_text(
+        f"Сейчас в каталоге: {len(entries)}\n"
+        f"• Hikka: {counts['hikka']}\n"
+        f"• ExteriaGram: {counts['exteriagram']}",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -137,9 +229,29 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     platform = query.data.removeprefix("type:")
     context.user_data["platform"] = platform
     await query.edit_message_text(
-        f"Платформа: {platform}\n\nВведите название или примерное описание:"
+        f"Платформа: {platform}\n\nВведите название или примерное описание.\n"
+        "Для отмены нажмите /cancel."
     )
     return QUERY
+
+
+async def choose_search_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.edit_message_text("Для какой платформы выполняем поиск?", reply_markup=platform_keyboard())
+    return TYPE
+
+
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "Главное меню:", reply_markup=main_keyboard()
+    )
 
 
 async def find_items(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -161,23 +273,15 @@ async def find_items(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if not results:
         await update.message.reply_text(
-            "Ничего не найдено. Попробуйте изменить запрос или выбрать другое слово."
+            "Ничего не найдено. Попробуйте изменить запрос или выбрать другое слово.",
+            reply_markup=main_keyboard(),
         )
         return ConversationHandler.END
 
     context.user_data["results"] = results
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                str(item["name"])[:64],
-                callback_data=f"get:{index}",
-            )
-        ]
-        for index, item in enumerate(results)
-    ]
     await update.message.reply_text(
         f"Найдено: {len(results)}\nВыберите нужный файл:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=results_keyboard(results),
     )
     return ConversationHandler.END
 
@@ -194,10 +298,30 @@ async def send_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(file_url)
             response.raise_for_status()
+            try:
+                version = await load_metadata(client, item.get("version"))
+                description = await load_metadata(client, item.get("description"))
+            except httpx.HTTPError as error:
+                logger.warning("Не удалось загрузить метаданные %s: %s", item["name"], error)
+                version = str(item.get("version", "")).strip()
+                description = str(item.get("description", "")).strip()
         filename = os.path.basename(urlparse(file_url).path) or f"{item['name']}.plugin"
+        caption = (
+            f"{item.get('name', 'Файл')}\n"
+            f"Версия: {version or 'не указана'}\n"
+            f"Описание: {description or 'не указано'}"
+        )[:1024]
         await query.message.reply_document(
             document=InputFile(io.BytesIO(response.content), filename=filename),
-            caption=html.escape(str(item.get("name", "Файл"))),
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("🔎 Новый поиск", callback_data="search"),
+                        InlineKeyboardButton("« В меню", callback_data="menu"),
+                    ]
+                ]
+            ),
         )
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
         logger.warning("Не удалось отправить элемент каталога: %s", error)
@@ -227,14 +351,27 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
     conversation = ConversationHandler(
-        entry_points=[CommandHandler("start", start), CommandHandler("search", start)],
+        entry_points=[
+            CommandHandler("search", begin_search),
+            CallbackQueryHandler(choose_search_callback, pattern=r"^search$"),
+            MessageHandler(filters.Regex(f"^{re.escape(SEARCH_BUTTON)}$"), begin_search),
+        ],
         states={
             TYPE: [CallbackQueryHandler(choose_type, pattern=r"^type:")],
             QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_items)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", show_help))
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^📦 Каталог$"), show_catalog)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^ℹ️ Помощь$"), show_help)
+    )
     application.add_handler(conversation)
+    application.add_handler(CallbackQueryHandler(back_to_menu, pattern=r"^menu$"))
     application.add_handler(CallbackQueryHandler(send_item, pattern=r"^get:"))
     application.add_error_handler(error_handler)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
