@@ -1,0 +1,4 @@
+type: plygin
+name: ai-model-belka
+ls: https://github.com/belka-developer/belka-modules/tree/main/plugin_extra/Ai-model-belka
+version: 
