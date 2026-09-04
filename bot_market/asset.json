@@ -7,7 +7,7 @@
       "version": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/plugin_extra/Ai-model-belka/version.txt",
       "description": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/plugin_extra/Ai-model-belka/description.txt",
       "file": "ai-model-belka.plugin",
-      "keywords": ["ai", "model", "искусственный интеллект"]
+      "keywords": ["ai", "model", "искусственный интеллект", "модель", "нейросеть", "нейронная сеть", "chatgpt", "gpt", "openai", "иишка", "искусственный интеллект", "чат", "чатбот", "чат-бот", "чат бот"]
     },
     {
       "type": "hikka",
@@ -16,7 +16,7 @@
       "version": "https://raw.githubusercontent.com/belka-developer/belka-modules/refs/heads/main/Hikka/roll/version.txt",
       "description": "https://github.com/belka-developer/belka-modules/blob/main/Hikka/roll/description.txt",
       "file": "Roll.py",
-      "keywords": ["roll", "dice", "game"]
+      "keywords": ["roll", "dice", "game", "игра", "кубик", "рандом", "random", "dice roll", "roll dice"]
     }
   ]
 }
