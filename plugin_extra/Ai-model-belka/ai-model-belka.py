@@ -2,13 +2,22 @@ import json
 import re
 import time
 from collections import deque
+from types import SimpleNamespace
 from typing import Any, List, Optional, Tuple
 
 import requests
+try:
+    from java import jclass
+except ImportError:
+    jclass = None
 
 from base_plugin import BasePlugin, HookResult, HookStrategy
 from ui.settings import Header, Input, Text
 from client_utils import send_text, run_on_queue
+try:
+    from hook_utils import get_private_field
+except ImportError:
+    get_private_field = None
 
 # Selector и BulletinHelper используются только для пресета моделей —
 # делаем импорт "мягким". Если на какой-то версии клиента их нет, плагин
@@ -40,7 +49,7 @@ __description__ = (
     "в текущем чате (с КД между ответами)"
 )
 __author__ = "belka • @belka_spot"
-__version__ = "1.6.0"
+__version__ = "1.6.3"
 __icon__ = "icon_belka_prod/0"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -76,6 +85,7 @@ PERSONA_CACHE_KEY = "persona_presets_cache_json"
 PERSONA_MANUAL_LABEL = "✏️ Свой промпт (см. поле «Системный промпт» выше)"
 
 SYSTEM_PROMPT = ""
+DEFAULT_LOG_AGGREGATOR_URL = ""
 
 CMD_ON = ".он"
 CMD_OFF = ".оф"
@@ -138,18 +148,10 @@ class HFAutoResponderPlugin(BasePlugin):
         # Хук на входящие апдейты — реагируем на новые сообщения в активных чатах.
         # TL_updateNewMessage — сообщения с медиа/групповые чаты.
         # TL_updateShortMessage — обычные текстовые сообщения в личке (компактная форма).
-        self.add_hook("TL_updateNewMessage")
-        self.add_hook("TL_updateShortMessage")
-        # Сообщения в супергруппах и каналах приходят отдельным типом апдейта
-        # TL_updateNewChannelMessage (НЕ TL_updateNewMessage!). Без этого хука
-        # чужие сообщения в супергруппах (а это почти все группы в Telegram)
-        # никогда не долетали до автоответчика.
-        self.add_hook("TL_updateNewChannelMessage")
-        # На случай, если апдейты придут настоящим контейнером (а не так, как
-        # мы наблюдаем на текущей версии клиента, где TL_updateShortMessage
-        # ошибочно роутится в on_updates_hook как "ложный контейнер").
-        self.add_hook("TL_updates")
-        self.add_hook("TL_updatesCombined")
+        # SDK может передавать полное Java-имя TL-класса, поэтому нужен
+        # substring-match, а не точное совпадение имени события.
+        self.add_hook("TL_update", match_substring=True)
+        self.add_hook("TL_updates", match_substring=True)
 
         # Загружаем список активных чатов из настроек в память
         self._active_chats = self._load_active_chats()
@@ -449,17 +451,21 @@ class HFAutoResponderPlugin(BasePlugin):
             lines = text.split("\n")
             return "\n".join((f"> {line}" if line else ">") for line in lines)
         if style_id == "quote_collapsed":
-            lines = text.split("\n") or [""]
-            quoted = [f"**> {lines[0]}"]
-            quoted.extend((f"> {line}" if line else ">") for line in lines[1:])
-            return "\n".join(quoted)
+            return text
 
         return text
 
-    def _style_send_kwargs(self, style_id: str) -> dict:
+    def _style_send_kwargs(self, style_id: str, text: str = "") -> dict:
         # parse_mode передаём только если реально что-то меняли — иначе
         # ответ модели уходит как раньше, plain-текстом, без риска, что
         # случайные *звёздочки* в ответе нейросети сломают форматирование.
+        if style_id == "quote_collapsed" and jclass is not None:
+            entity_class = jclass("org.telegram.tgnet.TLRPC$TL_messageEntityBlockquote")
+            entity = entity_class()
+            entity.offset = 0
+            entity.length = len(text.encode("utf-16-le")) // 2
+            entity.collapsed = True
+            return {"entities": [entity]}
         if style_id and style_id != "none":
             return {"parse_mode": "Markdown"}
         return {}
@@ -522,6 +528,13 @@ class HFAutoResponderPlugin(BasePlugin):
                 default="",
                 subtext="Например: !ai — сообщения с этим словом уйдут в нейросеть, а ответ придёт одним чистым сообщением, без эмодзи/времени/модели. Пусто — выключено",
                 icon="msg_bot",
+            ),
+            Input(
+                key="log_aggregator_url",
+                text="URL агрегатора логов",
+                default=DEFAULT_LOG_AGGREGATOR_URL,
+                subtext="Например: http://192.168.1.10:8765/log. Оставь пустым, чтобы отключить отправку логов",
+                icon="msg_log",
             ),
             Text(
                 text="Управление из чата",
@@ -952,8 +965,16 @@ class HFAutoResponderPlugin(BasePlugin):
         try:
             style_id = self._get_style("style_test")
             styled_reply = self._apply_style(reply, style_id)
-            message = f"🤖 {styled_reply}\n\n({elapsed:.1f}с, модель: {model})"
-            send_text(dialog_id, message, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id))
+            if style_id in ("quote", "quote_collapsed"):
+                message = f"{styled_reply}\n\n({elapsed:.1f}с, модель: {model})"
+            else:
+                message = f"🤖 {styled_reply}\n\n({elapsed:.1f}с, модель: {model})"
+            send_text(
+                dialog_id,
+                message,
+                replyToMsg=reply_to_id,
+                **self._style_send_kwargs(style_id, styled_reply),
+            )
             self._debug["last_reply_sent"] = reply[:100]
         except Exception as e:
             self._dlog(f".t: send_text failed: {e}")
@@ -987,7 +1008,7 @@ class HFAutoResponderPlugin(BasePlugin):
         try:
             style_id = self._get_style("style_custom_trigger")
             styled_reply = self._apply_style(reply, style_id)
-            send_text(dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id))
+            send_text(dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id, styled_reply))
             self._debug["last_reply_sent"] = reply[:100]
         except Exception as e:
             self._debug["last_error"] = f"custom_trigger send_text: {e}"
@@ -1019,7 +1040,7 @@ class HFAutoResponderPlugin(BasePlugin):
         try:
             style_id = self._get_style("style_gpt")
             styled_reply = self._apply_style(reply, style_id)
-            send_text(dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id))
+            send_text(dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id, styled_reply))
             self._debug["last_reply_sent"] = reply[:100]
         except Exception as e:
             self._debug["last_error"] = f"gpt: send_text failed: {e}"
@@ -1153,17 +1174,20 @@ class HFAutoResponderPlugin(BasePlugin):
             # Приватные текстовые сообщения без медиа в MTProto приходят в
             # компактной форме TL_updateShortMessage — там текст/user_id/out/id
             # лежат прямо на update, а не внутри update.message.
-            if update_name == "TL_updateShortMessage":
+            if "TL_updateShortMessage" in update_name:
                 return self._handle_short_message(update)
+
+            if "TL_updateShortChatMessage" in update_name:
+                return self._handle_short_chat_message(update)
 
             # Сообщения с медиа, обычные (не супер-) групповые чаты и т.д.
             # приходят как TL_updateNewMessage, где всё завёрнуто в update.message.
-            if update_name == "TL_updateNewMessage":
+            if "TL_updateNewMessage" in update_name:
                 return self._handle_new_message(getattr(update, "message", None))
 
             # Супергруппы и каналы шлют отдельный тип апдейта — та же структура
             # (update.message), просто другое имя TL-объекта.
-            if update_name == "TL_updateNewChannelMessage":
+            if "TL_updateNewChannelMessage" in update_name:
                 return self._handle_new_message(getattr(update, "message", None))
 
             return result
@@ -1186,41 +1210,106 @@ class HFAutoResponderPlugin(BasePlugin):
         self._dlog(f"HF Auto-Responder: on_updates_hook called, container_name={container_name}")
 
         try:
-            if container_name == "TL_updateShortMessage":
+            if "TL_updateShortMessage" in container_name:
                 return self._handle_short_message(updates)
 
-            if container_name == "TL_updateNewMessage":
+            if "TL_updateShortChatMessage" in container_name:
+                return self._handle_short_chat_message(updates)
+
+            if "TL_updateNewMessage" in container_name:
                 return self._handle_new_message(getattr(updates, "message", None))
 
-            if container_name == "TL_updateNewChannelMessage":
+            if "TL_updateNewChannelMessage" in container_name:
                 return self._handle_new_message(getattr(updates, "message", None))
 
-            # Настоящий контейнер: разворачиваем вложенные апдейты через .size()/.get(i),
-            # т.к. Java ArrayList из reflection не поддерживает питоновский "for x in ...".
-            inner = getattr(updates, "updates", None)
+            inner = self._get_update_field(updates, "updates")
             if inner is None:
-                return result
+                # Some SDK builds pass the collection itself as `updates`
+                # instead of wrapping it in TL_updates.updates.
+                inner = updates
+                self._dlog(
+                    f"updates field fallback: type={type(updates).__name__}, "
+                    f"repr={str(updates)[:200]}"
+                )
 
-            try:
-                count = inner.size()
-            except Exception:
-                count = 0
-
-            for idx in range(count):
-                item = inner.get(idx)
-                item_type = type(item).__name__
-                if item_type == "TL_updateNewMessage":
-                    self._handle_new_message(getattr(item, "message", None))
-                elif item_type == "TL_updateNewChannelMessage":
-                    self._handle_new_message(getattr(item, "message", None))
-                elif item_type == "TL_updateShortMessage":
-                    self._handle_short_message(item)
+            for item in self._iter_updates(inner):
+                self._handle_update_object(item)
 
             return result
         except Exception as e:
             self._debug["last_error"] = f"on_updates_hook: {e}"
             self._dlog(f"HF Auto-Responder: on_updates_hook error: {e}")
             return result
+
+    def _iter_updates(self, updates: Any):
+        # SDK versions expose TL_updates.updates either as a Java list or
+        # as a regular Python iterable.
+        try:
+            count = int(updates.size())
+        except (AttributeError, TypeError, ValueError):
+            count = None
+
+        if count is not None:
+            for idx in range(count):
+                yield updates.get(idx)
+            return
+
+        try:
+            yield from updates
+        except TypeError:
+            return
+
+    def _get_update_field(self, obj: Any, name: str):
+        try:
+            value = getattr(obj, name, None)
+        except Exception:
+            value = None
+        if value is not None:
+            return value
+        if get_private_field is not None:
+            try:
+                return get_private_field(obj, name)
+            except Exception:
+                pass
+        return None
+
+    def _handle_update_object(self, update: Any):
+        update_type = type(update).__name__
+        if update_type in ("str", "bytes", "int", "NoneType"):
+            return
+        self._dlog(f"nested update received: type={update_type}")
+        if "TL_updateNewChannelMessage" in update_type:
+            self._handle_new_message(self._get_update_field(update, "message"))
+        elif "TL_updateNewMessage" in update_type:
+            self._handle_new_message(self._get_update_field(update, "message"))
+        elif "TL_updateShortMessage" in update_type:
+            self._handle_short_message(update)
+        elif "TL_updateShortChatMessage" in update_type:
+            self._handle_short_chat_message(update)
+
+    def _handle_short_chat_message(self, update: Any) -> HookResult:
+        # Telegram uses this compact update for ordinary group chats.
+        chat_id = self._get_update_field(update, "chat_id")
+        text = self._get_update_field(update, "message")
+        if chat_id is None or not isinstance(text, str):
+            self._dlog(
+                f"short chat update missing fields: "
+                f"chat_id={chat_id}, text_type={type(text).__name__}"
+            )
+            return HookResult()
+
+        peer = SimpleNamespace(chat_id=chat_id)
+        sender_id = self._get_update_field(update, "from_id")
+        if not isinstance(sender_id, int):
+            sender_id = getattr(sender_id, "user_id", None)
+        message = SimpleNamespace(
+            message=text,
+            peer_id=peer,
+            from_id=SimpleNamespace(user_id=sender_id),
+            id=self._get_update_field(update, "id"),
+            out=self._get_update_field(update, "out") or False,
+        )
+        return self._handle_new_message(message)
 
     def _handle_short_message(self, update: Any) -> HookResult:
         result = HookResult()
@@ -1329,7 +1418,7 @@ class HFAutoResponderPlugin(BasePlugin):
         is_test_cmd = raw_text == cmd_test or raw_text.startswith(cmd_test + " ")
         if is_test_cmd:
             from_id = getattr(message, "from_id", None)
-            sender_id = getattr(from_id, "user_id", None) if from_id is not None else None
+            sender_id = self._extract_sender_id(from_id, peer)
             if sender_id is None and not self._is_group_peer(peer):
                 # В личных сообщениях from_id иногда отсутствует —
                 # тогда отправитель это собеседник, т.е. сам peer.
@@ -1350,7 +1439,7 @@ class HFAutoResponderPlugin(BasePlugin):
         is_gpt_cmd = raw_text == cmd_gpt or raw_text.startswith(cmd_gpt + " ")
         if is_gpt_cmd:
             from_id = getattr(message, "from_id", None)
-            sender_id = getattr(from_id, "user_id", None) if from_id is not None else None
+            sender_id = self._extract_sender_id(from_id, peer)
             if sender_id is None and not self._is_group_peer(peer):
                 sender_id = getattr(peer, "user_id", None)
             allowed = self._get_allowed_test_users()
@@ -1370,7 +1459,7 @@ class HFAutoResponderPlugin(BasePlugin):
         )
         if is_custom_cmd:
             from_id = getattr(message, "from_id", None)
-            sender_id = getattr(from_id, "user_id", None) if from_id is not None else None
+            sender_id = self._extract_sender_id(from_id, peer)
             if sender_id is None and not self._is_group_peer(peer):
                 sender_id = getattr(peer, "user_id", None)
             allowed = self._get_allowed_test_users()
@@ -1449,6 +1538,18 @@ class HFAutoResponderPlugin(BasePlugin):
         if peer is None:
             return False
         return bool(getattr(peer, "chat_id", None)) or bool(getattr(peer, "channel_id", None))
+
+    def _extract_sender_id(self, from_id: Any, peer: Any) -> Optional[int]:
+        # В старом формате Message.from_id может быть самим числовым ID,
+        # а в новом — объектом PeerUser с полем user_id.
+        if isinstance(from_id, int):
+            return from_id
+        sender_id = getattr(from_id, "user_id", None) if from_id is not None else None
+        if sender_id is not None:
+            return sender_id
+        if from_id is None and not self._is_group_peer(peer):
+            return getattr(peer, "user_id", None)
+        return None
 
     def _get_allowed_test_users(self) -> set:
         raw = self.get_setting("allowed_test_users", "").strip()
@@ -1532,7 +1633,7 @@ class HFAutoResponderPlugin(BasePlugin):
         try:
             style_id = self._get_style("style_autoreply")
             styled_reply = self._apply_style(reply, style_id)
-            send_text(peer_dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id))
+            send_text(peer_dialog_id, styled_reply, replyToMsg=reply_to_id, **self._style_send_kwargs(style_id, styled_reply))
             self._debug["last_reply_sent"] = reply[:100]
         except Exception as e:
             self._debug["last_error"] = f"send_text: {e}"
