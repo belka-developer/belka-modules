@@ -1,0 +1,132 @@
+import re
+import threading
+import time
+from typing import Dict, List, Optional, Tuple
+
+import requests
+
+from base_plugin import BasePlugin, HookResult, HookStrategy
+
+
+__id__ = "holy-cow-filter"
+__name__ = "HolyCow-Filter"
+__description__ = (
+    "Пассивная цензура исходящих сообщений. Список слов автоматически "
+    "обновляется с GitHub."
+)
+__author__ = "belka • @belka_spot"
+__version__ = "1.0.0"
+__icon__ = "icon_belka_prod/0"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.3.3"
+
+WORDS_URL = (
+    "https://raw.githubusercontent.com/"
+    "belka-developer/belka-modules/refs/heads/main/"
+    "plugin_extra/HolyCow-Filter/banword-strong.txt"
+)
+WORDS_CACHE_KEY = "holycow_words_cache"
+REFRESH_INTERVAL = 300
+LINE_PATTERN = re.compile(r"^\s*\[(?P<word>.+?)\]\s*\((?P<replacement>.*)\)\s*$")
+
+
+class HolyCowFilter(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+        self._lock = threading.Lock()
+        self._words: List[Tuple[str, str]] = []
+        self._replacement_by_word: Dict[str, str] = {}
+        self._pattern: Optional[re.Pattern] = None
+        self._next_refresh = 0.0
+        self._load_cached_words()
+        self._refresh_in_background(force=True)
+
+    def on_send_message_hook(self, account: int, params) -> HookResult:
+        message = getattr(params, "message", None)
+        if not isinstance(message, str) or not message:
+            return HookResult()
+
+        self._refresh_in_background()
+        censored = self._censor(message)
+        if censored == message:
+            return HookResult()
+
+        params.message = censored
+        return HookResult(strategy=HookStrategy.MODIFY, params=params)
+
+    def _refresh_in_background(self, force: bool = False):
+        now = time.monotonic()
+        with self._lock:
+            if not force and now < self._next_refresh:
+                return
+            self._next_refresh = now + REFRESH_INTERVAL
+
+        thread = threading.Thread(target=self._refresh_words, daemon=True)
+        thread.start()
+
+    def _refresh_words(self):
+        try:
+            response = requests.get(WORDS_URL, timeout=15)
+            response.raise_for_status()
+            words = self._parse_words(response.text)
+            self._set_words(words)
+            self.set_setting(WORDS_CACHE_KEY, response.text)
+            self._dlog(f"HolyCow-Filter: загружено слов: {len(words)}")
+        except requests.RequestException as error:
+            self._dlog(f"HolyCow-Filter: ошибка загрузки списка: {error}")
+        except ValueError as error:
+            self._dlog(f"HolyCow-Filter: некорректный список слов: {error}")
+
+    def _load_cached_words(self):
+        cached = self.get_setting(WORDS_CACHE_KEY, "")
+        if not cached:
+            return
+        try:
+            self._set_words(self._parse_words(cached))
+        except ValueError as error:
+            self._dlog(f"HolyCow-Filter: ошибка локального кэша: {error}")
+
+    @staticmethod
+    def _parse_words(text: str) -> List[Tuple[str, str]]:
+        words: List[Tuple[str, str]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = LINE_PATTERN.match(line)
+            if match is None:
+                raise ValueError(f"строка {line_number}: ожидается [слово] (замена)")
+            word = match.group("word").strip()
+            replacement = match.group("replacement")
+            if not word:
+                raise ValueError(f"строка {line_number}: пустое слово")
+            words.append((word, replacement))
+        return words
+
+    def _set_words(self, words: List[Tuple[str, str]]):
+        mapping = {word.casefold(): replacement for word, replacement in words}
+        ordered_words = sorted(mapping, key=len, reverse=True)
+        pattern = None
+        if ordered_words:
+            pattern = re.compile(
+                r"(?<!\w)(" + "|".join(re.escape(word) for word in ordered_words) + r")(?!\w)",
+                re.IGNORECASE,
+            )
+        with self._lock:
+            self._words = [(word, mapping[word.casefold()]) for word in ordered_words]
+            self._replacement_by_word = mapping
+            self._pattern = pattern
+
+    def _censor(self, text: str) -> str:
+        with self._lock:
+            pattern = self._pattern
+            replacements = dict(self._replacement_by_word)
+        if pattern is None:
+            return text
+        return pattern.sub(lambda match: replacements[match.group(0).casefold()], text)
+
+    def _dlog(self, message: str):
+        try:
+            self.log(message)
+        except Exception:
+            pass
