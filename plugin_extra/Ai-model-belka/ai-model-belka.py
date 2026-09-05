@@ -957,6 +957,13 @@ class HFAutoResponderPlugin(BasePlugin):
         except Exception as e:
             self._dlog(f"ping: send_text failed: {e}")
 
+    def _send_request_error(self, dialog_id: int, command: str, error: str, reply_to_id=None):
+        message = f"❌ {command}: запрос не выполнен\n{error[:500]}"
+        try:
+            send_text(dialog_id, message, replyToMsg=reply_to_id)
+        except Exception as send_error:
+            self._dlog(f"{command}: error send failed: {send_error}")
+
     # ---------- .t: реальный запрос к нейросети ----------
 
     def _handle_test(self, dialog_id: int, prompt: str, token: str, model: str, reply_to_id=None):
@@ -1010,6 +1017,7 @@ class HFAutoResponderPlugin(BasePlugin):
         if not token:
             self._debug["last_error"] = "custom_trigger: токен HF не задан"
             self._dlog("custom_trigger: HF token is not set, skipping")
+            self._send_request_error(dialog_id, "custom", "токен HF не задан", reply_to_id)
             return
 
         # В отличие от .t — своё триггер-слово помнит контекст чата (мини-память).
@@ -1020,10 +1028,12 @@ class HFAutoResponderPlugin(BasePlugin):
         except Exception as e:
             self._debug["last_error"] = f"custom_trigger _query_hf: {e}"
             self._dlog(f"custom_trigger: HF request failed: {e}")
+            self._send_request_error(dialog_id, "custom", str(e), reply_to_id)
             return
 
         if not reply:
             self._debug["last_error"] = "custom_trigger: пустой ответ от модели"
+            self._send_request_error(dialog_id, "custom", "модель вернула пустой ответ", reply_to_id)
             return
 
         # Запоминаем сообщение только после удачного ответа, как и в автоответе.
@@ -1045,6 +1055,7 @@ class HFAutoResponderPlugin(BasePlugin):
         if not token:
             self._debug["last_error"] = "gpt: токен HF не задан"
             self._dlog("gpt: HF token is not set, skipping")
+            self._send_request_error(dialog_id, ".гпт", "токен HF не задан", reply_to_id)
             return
 
         # В отличие от своего триггер-слова — .гпт без памяти чата,
@@ -1054,10 +1065,12 @@ class HFAutoResponderPlugin(BasePlugin):
         except Exception as e:
             self._debug["last_error"] = f"gpt _query_hf: {e}"
             self._dlog(f"gpt: HF request failed: {e}")
+            self._send_request_error(dialog_id, ".гпт", str(e), reply_to_id)
             return
 
         if not reply:
             self._debug["last_error"] = "gpt: пустой ответ от модели"
+            self._send_request_error(dialog_id, ".гпт", "модель вернула пустой ответ", reply_to_id)
             return
 
         # Ответ приходит так же, как и у своего триггер-слова — чистым
@@ -1075,7 +1088,10 @@ class HFAutoResponderPlugin(BasePlugin):
         if not token:
             return "❌ .ping: токен HF не задан в настройках плагина"
 
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -1638,6 +1654,11 @@ class HFAutoResponderPlugin(BasePlugin):
         return True
 
     def _handle_message(self, peer_dialog_id: int, text: str, token: str, model: str, reply_to_id):
+        if not token:
+            self._debug["last_error"] = "autoreply: токен HF не задан"
+            self._send_request_error(peer_dialog_id, "автоответ", "токен HF не задан", reply_to_id)
+            return
+
         history = list(self._get_history(peer_dialog_id))
 
         try:
@@ -1645,10 +1666,12 @@ class HFAutoResponderPlugin(BasePlugin):
         except Exception as e:
             self._debug["last_error"] = f"_query_hf: {e}"
             self._dlog(f"HF request failed: {e}")
+            self._send_request_error(peer_dialog_id, "автоответ", str(e), reply_to_id)
             return
 
         if not reply:
             self._debug["last_error"] = "_query_hf: пустой ответ от модели"
+            self._send_request_error(peer_dialog_id, "автоответ", "модель вернула пустой ответ", reply_to_id)
             return
 
         # Запоминаем сообщение юзера только после удачного ответа нейросети —
@@ -1672,7 +1695,10 @@ class HFAutoResponderPlugin(BasePlugin):
         history: Optional[List[str]] = None,
         use_system_prompt: bool = True,
     ) -> str:
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
 
         messages = []
         if use_system_prompt:

@@ -103,7 +103,11 @@ def shutdown(_signum: int, _frame: object) -> None:
 
 def main() -> None:
     if not BOT_FILE.exists():
-        raise FileNotFoundError(f"Не найден локальный файл бота: {BOT_FILE}")
+        logger.info("Локальный m.py не найден, загружаю первую версию с GitHub")
+        if not update_bot():
+            raise FileNotFoundError(
+                f"Не найден локальный файл бота и не удалось скачать его с GitHub: {BOT_FILE}"
+            )
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
