@@ -15,7 +15,7 @@ __description__ = (
     "обновляется с GitHub."
 )
 __author__ = "belka • @belka_spot"
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __icon__ = "icon_belka_prod/0"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -123,7 +123,25 @@ class HolyCowFilter(BasePlugin):
             replacements = dict(self._replacement_by_word)
         if pattern is None:
             return text
-        return pattern.sub(lambda match: replacements[match.group(0).casefold()], text)
+        return pattern.sub(
+            lambda match: self._match_replacement(
+                match.group(0), replacements[match.group(0).casefold()]
+            ),
+            text,
+        )
+
+    @staticmethod
+    def _match_replacement(word: str, replacement: str) -> str:
+        result = list(replacement)
+        for index, character in enumerate(result):
+            if not character.isalpha() or index >= len(word):
+                continue
+            source_character = word[index]
+            if source_character.isupper():
+                result[index] = character.upper()
+            elif source_character.islower():
+                result[index] = character.lower()
+        return "".join(result)
 
     def _dlog(self, message: str):
         try:
