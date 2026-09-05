@@ -74,7 +74,7 @@ __description__ = (
     "в текущем чате (с КД между ответами)"
 )
 __author__ = "belka • @belka_spot"
-__version__ = "1.6.7-b"
+__version__ = "1.6.7-b.1"
 __icon__ = "icon_belka_prod/0"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.3.3"
@@ -1092,6 +1092,7 @@ class HFAutoResponderPlugin(BasePlugin):
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        headers["Authorization"] = f"Bearer {token}"
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -1100,6 +1101,7 @@ class HFAutoResponderPlugin(BasePlugin):
 
         started = time.time()
         try:
+            headers["Authorization"] = "Bearer " + token
             response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=15)
         except requests.exceptions.Timeout:
             return (
@@ -1700,6 +1702,7 @@ class HFAutoResponderPlugin(BasePlugin):
             "Content-Type": "application/json",
         }
 
+        headers["Authorization"] = f"Bearer {token}"
         messages = []
         if use_system_prompt:
             system_prompt = self.get_setting("system_prompt", SYSTEM_PROMPT).strip() or SYSTEM_PROMPT
@@ -1718,6 +1721,7 @@ class HFAutoResponderPlugin(BasePlugin):
             "max_tokens": 256,
         }
 
+        headers["Authorization"] = "Bearer " + token
         response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
@@ -1727,7 +1731,11 @@ class HFAutoResponderPlugin(BasePlugin):
             return ""
 
         try:
-            return data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"].get("content")
+            if not isinstance(content, str) or not content.strip():
+                self._dlog(f"HF: модель вернула пустой content: {data}")
+                return ""
+            return content.strip()
         except (KeyError, IndexError, TypeError):
             self._dlog(f"HF: неожиданный формат ответа: {data}")
             return ""
